@@ -1,164 +1,176 @@
 # skill-forge
 
 > Turn agent trial-and-error into reusable Claude Code skills — personalized for **your** OS, **your** shell, and **your** network.
+>
+> 把 agent 绕过的弯路锻造成可复用的 Claude Code skill——为**你的**系统、**你的** shell、**你的**网络环境量身定制。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## The Problem
+---
 
-You ask Claude Code to do something. It tries approach A — fails. Tries B — also fails. Three dead ends later, it finally finds a path that works. Why? Because your Windows 11 (Chinese edition), Git Bash, and GFW-trapped network aren't what the agent expected.
+## The Problem / 痛点
 
-A week later, you ask the same thing. The agent has no memory of last time — it walks straight back into the same dead ends.
+You ask Claude Code to do something. It tries approach A — fails. Tries B — also fails. Three dead ends later, it finally finds a path that works. Why? Because your Windows 11 (Chinese edition), Git Bash, and GFW-trapped network aren't what the agent expected. A week later, you ask the same thing — the agent has no memory, and walks straight back into the same dead ends.
 
-## The Solution
+你让 Claude Code 帮你做一件事。它试了 A 方案——失败了。换 B——又失败了。绕了三个弯路之后，终于找到一条能走通的路。为什么会绕路？因为你的 Windows 11 中文版、Git Bash、被墙的网络——这些都不是 agent 预期中的"标准环境"。一周后你再次提出同样的需求，agent 毫无记忆，再次走进同样的死胡同。
 
-**skill-forge** captures the *winning path* after a winding task completes, and generates a personalized Claude Code skill from it. The generated skill records:
+## The Solution / 方案
 
-- ✅ The exact commands that worked
-- ❌ The dead ends that didn't — and **why** (proxy? shell? OS?)
-- 🔧 Your environment context (OS, shell, network, tool versions)
-- 🔍 How to verify success
+**skill-forge** captures the *winning path* after a winding task completes, and generates a personalized Claude Code skill from it. Next time the agent loads the skill, it skips the detours and goes straight to what works.
 
-Next time the agent loads the skill, it skips the detours and goes straight to what works.
+**skill-forge** 在 agent 绕完弯路终于成功之后，把那条最终走通的路记录下来，生成一个个性化的 Claude Code skill。下次 agent 加载这个 skill，就能跳过所有弯路，直奔正确答案。
 
-## Quick Start
+The generated skill records / 生成的 skill 会记录：
 
-### 1. Install the meta-skill
+- ✅ The exact commands that worked / 实际跑通的命令
+- ❌ The dead ends that didn't — and **why** / 失败的做法——以及失败的原因
+- 🔧 Your environment / 你的运行环境（OS, shell, 网络, 工具版本）
+- 🔍 How to verify success / 验证成功的方法
+
+## Quick Start / 快速开始
+
+### 1. Install the meta-skill / 安装元技能
 
 ```bash
 bash scripts/install.sh
 ```
 
 This registers `/skill-forge` in Claude Code.
+这会在 Claude Code 中注册 `/skill-forge` 命令。
 
-### 2. Generate your first skill
+### 2. Generate your first skill / 生成你的第一个 skill
 
 After a winding but successful task, say in Claude Code:
+在一次绕了弯路但最终成功的任务之后，在 Claude Code 中说：
 
 ```
 /skill-forge
 
 I just managed to push my project to GitHub after several failed attempts.
-The issues: GFW blocks GitHub, HTTPS remote triggers Windows credential
-manager, and Git Bash doesn't handle default branch names correctly.
+我刚才终于把项目推上 GitHub 了，中间失败了好几次。
 ```
 
-Claude will analyze the conversation, identify the dead ends, extract the
-winning path, and save the skill to `~/.claude/skills/`.
+Claude will analyze the conversation, identify the dead ends, extract the winning path, and save the skill to `~/.claude/skills/`.
+Claude 会分析对话记录，识别出走过的弯路，提取最终的成功路径，然后把 skill 保存到 `~/.claude/skills/`。
 
-### 3. Use your new skill
+### 3. Use it / 使用 skill
 
-Next time you ask to push to GitHub, Claude already knows about your proxy
-config, SSH preference, and branch naming quirks — no detours needed.
+Next time you ask to push to GitHub, Claude already knows about your proxy config, SSH preference, and branch naming quirks — no detours needed.
+下次你再让 Claude 推代码到 GitHub，它已经知道你的代理配置、SSH 偏好、分支命名惯例——不再绕路。
 
-## Example
+## Example / 示例
 
-Here's a real scenario from a Windows + China environment:
+A real scenario from a Windows + China environment:
+一个真实场景：Windows + 国内网络环境。
 
 <details>
-<summary><b>Scenario: Push a project to GitHub</b> (click to expand)</summary>
+<summary><b>Scenario: Push a project to GitHub / 场景：推送项目到 GitHub</b>（点击展开）</summary>
 
-| Attempt | Approach | Result |
+| Attempt | Approach / 方案 | Result / 结果 |
 |---------|----------|--------|
-| 1 | `git push origin master` | Timeout — GitHub blocked by GFW |
-| 2 | HTTPS remote + `gh auth login` | Popup hell — Windows credential manager breaks non-interactive flow |
-| 3 | SSH + manual proxy config | ❌ Proxy only set per-repo, not global |
-| **4 ✓** | `git config --global http.proxy` + SSH remote + explicit `-u origin main` | Works reliably |
+| 1 | `git push origin master` | Timeout — GitHub blocked by GFW / 超时——GFW 阻断 |
+| 2 | HTTPS remote + `gh auth login` | Popup hell — Windows credential manager / 弹窗地狱 |
+| 3 | SSH + per-repo proxy | ❌ 代理仅对单个仓库生效 |
+| **4 ✓** | `git config --global http.proxy` + SSH remote + `-u origin main` | Works reliably / 稳定可用 |
 
 The generated skill captures all four attempts, so future sessions jump straight to step 4.
+生成的 skill 记录了全部四次尝试，下次直接从第 4 步开始。
 
-→ [See the full generated skill](examples/github-push.md)
-→ [See the JSON input format](examples/github-push-input.json)
+→ [Full generated skill / 完整 skill](examples/github-push.md)
+→ [JSON input format / JSON 输入格式](examples/github-push-input.json)
 
 </details>
 
-## How It Works
+## How It Works / 工作流程
 
 ```
-Winding conversation
+绕弯路的对话记录
         │
         ▼
   ┌─────────────┐
-  │ 1. IDENTIFY  │  What was the task? What failed? Why?
+  │ 1. IDENTIFY  │  任务是什么？哪些失败了？为什么？
+  │    识别      │
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │ 2. EXTRACT   │  Which approach finally worked? What exact commands?
+  │ 2. EXTRACT   │  最终哪个方案成功了？具体命令是什么？
+  │    提取      │
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │ 3. GENERATE  │  Fill template with environment + pitfalls + proven path
+  │ 3. GENERATE  │  填入环境 + 踩坑记录 + 成功路径
+  │    生成      │
   └──────┬──────┘
          │
          ▼
   ┌─────────────┐
-  │ 4. INSTALL   │  Save to ~/.claude/skills/{name}.md
+  │ 4. INSTALL   │  保存到 ~/.claude/skills/{name}.md
+  │    安装      │
   └─────────────┘
 ```
 
-## Generated Skill Anatomy
+## Generated Skill Anatomy / Skill 结构
 
-Every skill generated by skill-forge includes:
+Every skill generated by skill-forge includes / 每个 skill 包含：
 
-| Section | Purpose |
+| Section / 章节 | Purpose / 用途 |
 |----------|---------|
-| **Environment** | OS, shell, network constraints — so the agent knows *where* it's running |
-| **When to use** | Trigger phrases that activate the skill |
-| **Proven approach** | Step-by-step, verified commands + the *why* behind each step |
-| **Pitfalls** | Failed attempts and their environment-specific reasons |
-| **Verification** | How to confirm the task succeeded |
+| **Environment** / 环境 | OS, shell, network — so the agent knows *where* it's running / 让 agent 知道自己在什么环境下运行 |
+| **When to use** / 触发条件 | Trigger phrases that activate the skill / 触发 skill 的短语 |
+| **Proven approach** / 可行方案 | Step-by-step commands + the *why* / 逐条命令 + 每一步的原因 |
+| **Pitfalls** / 避坑指南 | Failed attempts and their reasons / 失败的做法及其原因 |
+| **Verification** / 验证 | How to confirm success / 如何确认成功 |
 
-## Installation
+## Installation / 安装
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/jmdonbaba/skill-forge.git
 cd skill-forge
 bash scripts/install.sh
 ```
 
-The install script copies `SKILL.md` to `~/.claude/skills/skill-forge.md`.
-Claude Code auto-discovers skills in this directory.
+Copies `SKILL.md` to `~/.claude/skills/skill-forge.md`. Claude Code auto-discovers skills there.
+把 `SKILL.md` 复制到 `~/.claude/skills/skill-forge.md`，Claude Code 会自动发现。
 
-## Project Structure
+## Project Structure / 项目结构
 
 ```
 skill-forge/
-├── SKILL.md                          # Core skill definition (what gets installed)
-├── CLAUDE.md                         # Project context for Claude Code
+├── SKILL.md                          # 核心 skill 定义（被安装到 ~/.claude/skills/）
+├── CLAUDE.md                         # 项目上下文（Claude Code 进入目录时加载）
 ├── templates/
-│   └── skill-template.md             # Template for generated skills
+│   └── skill-template.md             # 生成 skill 用的模板
 ├── scripts/
-│   ├── install.sh                    # One-line installer
-│   └── generate.py                   # Standalone skill generator (interactive + JSON)
+│   ├── install.sh                    # 一键安装脚本
+│   └── generate.py                   # 独立生成器（交互式 / JSON 输入）
 ├── examples/
-│   ├── github-push.md                # Example generated skill
-│   └── github-push-input.json        # JSON input for generate.py
+│   ├── github-push.md                # 示例：生成的 skill 长什么样
+│   └── github-push-input.json        # 示例：JSON 输入格式
 └── LICENSE
 ```
 
-## What Makes a Good Skill
+## What Makes a Good Skill / 什么值得生成 skill
 
-Worth capturing as a skill:
+Worth it / 值得：
 
-- ✅ Environment-specific workarounds (proxy, mirrors, PATH quirks)
-- ✅ Platform differences (Windows vs macOS vs Linux)
-- ✅ Shell-specific syntax (Git Bash vs PowerShell vs zsh)
-- ✅ Toolchain bugs or version-specific behavior
-- ✅ Permission, firewall, or admin-rights gotchas
+- ✅ Proxy, mirrors, PATH quirks / 代理、镜像源、PATH 等环境问题
+- ✅ Platform differences (Windows vs macOS vs Linux) / 平台差异
+- ✅ Shell-specific syntax (Git Bash vs PowerShell vs zsh) / Shell 差异
+- ✅ Toolchain bugs or version-specific behavior / 工具链 bug 或版本特有问题
+- ✅ Permission, firewall, admin-rights / 权限、防火墙、管理员权限
 
-Not worth it:
+Not worth it / 不值得：
 
-- ❌ One-off tasks you'll never repeat
-- ❌ Generic solutions already in official docs
+- ❌ One-off tasks / 不会再做的一次性任务
+- ❌ Generic solutions in official docs / 官方文档里已经写清楚的
 
-## Contributing
+## Contributing / 贡献
 
-Found a pattern that skill-forge doesn't handle well? Have an environment-specific
-example to share? PRs welcome — especially environment-specific examples that
-help developers in similar setups.
+Found a pattern that skill-forge doesn't handle well? Have an environment-specific example to share? PRs welcome — especially examples that help developers in similar setups.
+发现了 skill-forge 没覆盖到的场景？有特定环境的踩坑经验？欢迎 PR——尤其欢迎能帮助同类环境开发者的示例。
 
-## License
+## License / 协议
 
 MIT — see [LICENSE](LICENSE).
