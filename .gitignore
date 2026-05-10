@@ -14,5 +14,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Claude Code local config
+.claude/
+
 # Generated skills (user's own output)
 output/
