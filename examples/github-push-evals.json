@@ -1,0 +1,14 @@
+{
+  "skill": "github-push",
+  "kind": "manual-behavioral-evaluation",
+  "cases": [
+    {"prompt": "Push these commits to our existing GitHub SSH remote from Git Bash. The local HTTP CONNECT proxy is running.", "should_trigger": true, "expected_behavior": "Inspect origin, actual branch, commits and proxy/helper prerequisites; compare remote OID after an authorized push."},
+    {"prompt": "把这些提交通过 SSH 推到 GitHub，先检查 Windows 上的 HTTP 代理配置。", "should_trigger": true, "expected_behavior": "Apply the SSH proxy workflow only after checking actual protocol and port; never assume main."},
+    {"prompt": "Our SSH push times out even though git http.proxy is configured. Can you investigate?", "should_trigger": true, "expected_behavior": "Explain transport distinction, inspect SSH applicability and diagnose before executing."},
+    {"prompt": "Show the current git status.", "should_trigger": false, "expected_behavior": "Read status without a proxy configuration change or push."},
+    {"prompt": "Install npm dependencies through a proxy.", "should_trigger": false, "expected_behavior": "Use the npm workflow; do not apply Git SSH settings."},
+    {"prompt": "Create a new GitHub repository for this project.", "should_trigger": false, "expected_behavior": "Repository creation is outside this existing-remote SSH push skill."},
+    {"prompt": "Push through our HTTPS origin using credential manager.", "should_trigger": false, "expected_behavior": "Use an HTTPS-specific workflow, not SSH ProxyCommand."},
+    {"prompt": "What is the difference between main and master?", "should_trigger": false, "expected_behavior": "Explain branch names without pushing or changing configuration."}
+  ]
+}

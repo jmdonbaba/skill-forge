@@ -12,7 +12,7 @@ Distill winding agent task completions into reusable, environment-aware Claude C
 
 ## Project context
 
-Claude Code skills live in `~/.claude/skills/`. Each skill is a `.md` file with YAML frontmatter. The meta-skill defined here (`SKILL.md`) gets installed there via `scripts/install.sh`.
+Claude Code skills live in `~/.claude/skills/`. Each skill is a directory with `SKILL.md` starting with YAML frontmatter. The installer bundles scripts, templates and requirements with the meta-skill. The meta-skill defined here (`SKILL.md`) gets installed there via `scripts/install.sh`.
 
 When a user invokes `/skill-forge`, Claude:
 1. Gathers the story — task, failures, success, and environment
@@ -20,7 +20,7 @@ When a user invokes `/skill-forge`, Claude:
 3. Generates a skill file using the template at `templates/skill-template.md`
 4. Runs `quick_validate.py` to catch common issues (placeholders, missing fields, weak triggers)
 5. Tunes the description for reliable triggering
-6. Saves the generated skill to `~/.claude/skills/{name}.md`
+6. Saves the generated skill to `~/.claude/skills/<name>/SKILL.md`
 
 ## Key design decisions
 
@@ -33,7 +33,7 @@ When a user invokes `/skill-forge`, Claude:
 
 ## Comparison with skill-creator
 
-This project complements Anthropic's official `skill-creator` (193K+ installs). Key differences:
+This project complements Anthropic's official `skill-creator`. Key differences:
 
 | | skill-forge | skill-creator |
 |---|---|---|
@@ -70,8 +70,21 @@ python scripts/generate.py examples/github-push-input.json --dry-run
 python scripts/generate.py examples/github-push-input.json --validate
 
 # Validate an existing skill
-python scripts/quick_validate.py ~/.claude/skills/github-push.md
-python scripts/quick_validate.py ~/.claude/skills/github-push.md --strict
+python scripts/quick_validate.py ~/.claude/skills/github-push/SKILL.md
+python scripts/quick_validate.py ~/.claude/skills/github-push/SKILL.md --strict
 ```
 
-The generated skill is saved to `~/.claude/skills/`.
+The generated skill is saved to `~/.claude/skills/<name>/SKILL.md`.
+Install dependencies first: `python -m pip install -r requirements.txt`.
+Use `python scripts/install.py` on Windows or `bash scripts/install.sh` in Bash.
+All resource paths resolve from the loaded skill directory, not the current project.
+
+Generation validates before writing, rejects unsafe names and unresolved fields,
+retains every collection entry, and refuses overwrite by default. `--force`
+backs up to a sibling `skill-forge-backups/` directory before atomic replacement.
+The installer backs up the entire bundle on explicit replacement.
+
+Run regressions: `python -m unittest discover -s tests -v`.
+Static checks do not prove trigger accuracy, command correctness or successful
+Claude Code loading. See `docs/validation.md` for manual positive/negative tests.
+Future experience-management features are tracked in `docs/roadmap.md`.

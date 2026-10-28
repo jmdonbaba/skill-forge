@@ -10,15 +10,15 @@
 
 ## The Problem / 痛点
 
-You ask Claude Code to do something. It tries approach A — fails. Tries B — also fails. Three dead ends later, it finally finds a path that works. Why? Because your Windows 11 (Chinese edition), Git Bash, and GFW-trapped network aren't what the agent expected. A week later, you ask the same thing — the agent has no memory, and walks straight back into the same dead ends.
+You ask Claude Code to do something. It tries approach A — fails. Tries B — also fails. Three dead ends later, it finally finds a path that works. Why? Because your Windows 11 (Chinese edition), Git Bash, and GFW-trapped network aren't what the agent expected. Even with built-in memory, an agent can repeat the same dead ends when a remembered workaround lacks evidence or environment checks.
 
-你让 Claude Code 帮你做一件事。它试了 A 方案——失败了。换 B——又失败了。绕了三个弯路之后，终于找到一条能走通的路。为什么会绕路？因为你的 Windows 11 中文版、Git Bash、被墙的网络——这些都不是 agent 预期中的"标准环境"。一周后你再次提出同样的需求，agent 毫无记忆，再次走进同样的死胡同。
+你让 Claude Code 帮你做一件事。它试了 A 方案——失败了。换 B——又失败了。绕了三个弯路之后，终于找到一条能走通的路。为什么会绕路？因为你的 Windows 11 中文版、Git Bash、被墙的网络——这些都不是 agent 预期中的"标准环境"。即使有内置记忆，如果经验缺少证据和环境检查，agent 仍可能重复踩坑。
 
 ## The Solution / 方案
 
-**skill-forge** captures the *winning path* after a winding task completes, and generates a personalized Claude Code skill from it. Next time the agent loads the skill, it skips the detours and goes straight to what works.
+**skill-forge** captures the *winning path* after a winding task completes, and generates a personalized Claude Code skill from it. On reuse, the agent can check the recorded environment and verification steps before applying the approach.
 
-**skill-forge** 在 agent 绕完弯路终于成功之后，把那条最终走通的路记录下来，生成一个个性化的 Claude Code skill。下次 agent 加载这个 skill，就能跳过所有弯路，直奔正确答案。
+**skill-forge** 在 agent 绕完弯路终于成功之后，把那条最终走通的路记录下来，生成一个个性化的 Claude Code skill。下次加载时，agent 可以先核对适用环境和验证步骤，再决定是否复用。
 
 The generated skill records / 生成的 skill 会记录：
 
@@ -26,17 +26,29 @@ The generated skill records / 生成的 skill 会记录：
 - ❌ The dead ends that didn't — and **why** (environment-specific cause) / 失败的做法——以及环境层面的原因
 - 🔧 Your environment / 你的运行环境（OS, shell, 网络, 工具版本）
 - 🔍 How to verify success / 验证成功的方法
-- 🎯 Pushy trigger descriptions that actually fire when needed / 精准触发的 skill 描述
+- 🎯 Specific trigger descriptions to evaluate in real sessions / 可在真实会话中评测的触发描述
 
 ## Quick Start / 快速开始
 
 ### 1. Install the meta-skill / 安装元技能
 
+Requires Python 3.10+ and PyYAML. / 需要 Python 3.10+ 和 PyYAML。
+
 ```bash
-bash scripts/install.sh
+python -m pip install -r requirements.txt
+python scripts/install.py
 ```
 
-This registers `/skill-forge` in Claude Code.
+Bash alternative / Bash 下也可使用：`bash scripts/install.sh`。
+
+This installs the complete bundle to `~/.claude/skills/skill-forge/`, including
+scripts, template and requirements. Run it from any working directory using
+the installer's path. In PowerShell, use `python scripts/install.py`.
+安装完整目录，包含脚本、模板和依赖声明；离开仓库也能使用。
+
+Reinstalling refuses to overwrite by default. Use `--force` for an intentional
+update; the previous directory (including local edits) is kept under
+`~/.claude/skill-forge-backups/`. / 默认不覆盖，显式更新会保留完整备份。
 
 ### 2. Generate your first skill / 生成你的第一个 skill
 
@@ -50,13 +62,13 @@ I just managed to push my project to GitHub after several failed attempts.
 我刚才终于把项目推上 GitHub 了，中间失败了好几次。
 ```
 
-Claude will analyze the conversation, identify the dead ends, extract the winning path, validate the result, tune the description, and save the skill to `~/.claude/skills/`.
-Claude 会分析对话记录，识别弯路，提取成功路径，验证结果，调整触发描述，然后保存 skill 到 `~/.claude/skills/`。
+Claude will analyze the conversation, identify the dead ends, extract the winning path, validate the result, tune the description, and save the skill to `~/.claude/skills/<name>/SKILL.md`.
+Claude 会分析对话记录，识别弯路，提取成功路径，验证结果，调整触发描述，然后保存到 `~/.claude/skills/<name>/SKILL.md`。
 
 ### 3. Use it / 使用 skill
 
-Next time you ask to push to GitHub, Claude already knows about your proxy config, SSH preference, and branch naming quirks — no detours needed.
-下次你再让 Claude 推代码到 GitHub，它已经知道你的代理配置、SSH 偏好、分支命名惯例——不再绕路。
+Test `/<name>` in a fresh Claude Code session, then try a matching prompt and an unrelated prompt. Check environment differences before reusing commands.
+在新会话中先测试 `/<name>`，再测试应触发和不应触发的请求；复用命令前核对当前环境。
 
 ## Standalone Generator / 独立生成器
 
@@ -72,43 +84,75 @@ python scripts/generate.py examples/github-push-input.json
 # Dry-run — print to stdout, don't save
 python scripts/generate.py examples/github-push-input.json --dry-run
 
-# Generate + auto-validate
+# Generate + validation report (structural errors always block saving)
 python scripts/generate.py examples/github-push-input.json --validate
+
+# Strict completeness checks; warnings block saving
+python scripts/generate.py examples/github-push-input.json --strict
+
+# Use a separate skills root (also works with the installer)
+python scripts/generate.py examples/github-push-input.json --skills-dir ./output/skills
+
+# Intentional replacement, with backup
+python scripts/generate.py examples/github-push-input.json --force
 ```
+
+Names must be portable kebab-case, at most 64 characters; path separators and
+reserved names are rejected. Dry-run performs the same validation without
+writing files. Existing skills, including legacy `<name>.md` files, are never
+silently overwritten. `--force` backs up before replacing `SKILL.md` atomically;
+the legacy file is left intact for manual review/migration. Custom skills roots
+store backups in their sibling `skill-forge-backups/` directory.
+名称校验和结构验证都在写入前完成；默认拒绝覆盖，显式替换先备份。
+
+Input accepts the original numbered fields (for example `TRIGGER_1`,
+`STEP_1_COMMAND`) or arrays `triggers`, `quick_start`, `steps`
+(`title`, `command`, `why`) and `pitfalls` (`approach`, `why`, `symptom`).
+Do not mix both formats for the same collection. All entries are retained;
+interactive entry ends with an empty line rather than a fixed item cap.
+旧 JSON 格式继续兼容，也支持数组；所有触发词、步骤和失败记录均完整保留。
 
 ## Quick Validator / 快速验证
 
 Check any skill file for common issues:
 
 ```bash
-python scripts/quick_validate.py ~/.claude/skills/my-skill.md
-python scripts/quick_validate.py ~/.claude/skills/my-skill.md --strict
+python scripts/quick_validate.py ~/.claude/skills/github-push/SKILL.md
+python scripts/quick_validate.py ~/.claude/skills/github-push/SKILL.md --strict
 ```
 
-Checks: YAML validity, required fields, placeholder remnants, trigger phrase specificity, command concreteness, section completeness, and description "pushiness."
+Uses PyYAML safe parsing (including duplicate-key rejection) and explicit type
+checks for the Skill Forge profile: `name`, `description`, `compatibility`, and
+`environment.os/shell/network/tools`. The last two are Forge conventions, not
+required Claude Code fields. All unresolved template variables are errors.
+
+`--strict` also checks directory/name consistency for `SKILL.md`, balanced code
+fences, command sections, and a verification command with expected output;
+warnings cause a nonzero exit. Trigger/command wording hints remain heuristics,
+not evidence of correct routing or execution. No command in a skill is executed
+by this validator. See [behavioral evaluation](docs/validation.md) for real
+positive/negative task tests and the limits of static checks.
+
+使用真实 YAML 解析和字段类型检查；严格模式额外检查内容完整性。
+静态验证不代表 Claude 已实际加载、正确触发或成功执行。
+
+Layout and resource resolution follow the [Claude Code skills documentation](https://code.claude.com/docs/en/skills).
 
 ## Example / 示例
 
-A real scenario from a Windows + China environment:
-一个真实场景：Windows + 国内网络环境。
+An illustrative Git Bash + HTTP CONNECT proxy example / Git Bash 与 HTTP CONNECT 代理说明性示例：
 
-<details>
-<summary><b>Scenario: Push a project to GitHub / 场景：推送项目到 GitHub</b>（点击展开）</summary>
+- SSH receives its proxy through `ProxyCommand`; Git `http.proxy` applies to HTTP(S).
+- Inspect the existing `origin` and current local branch; do not assume `main` or `master`.
+- Confirm remote commit identity after pushing; listing remote refs alone is insufficient.
+- Verify the proxy protocol/port, helper availability and SSH key locally first.
 
-| Attempt | Approach / 方案 | Result / 结果 |
-|---------|----------|--------|
-| 1 | `git push origin master` | Timeout — GitHub blocked by GFW / 超时——GFW 阻断 |
-| 2 | HTTPS remote + `gh auth login` | Popup hell — Windows credential manager / 弹窗地狱 |
-| 3 | SSH + per-repo proxy | ❌ 代理仅对单个仓库生效 |
-| **4 ✓** | `git config --global http.proxy` + SSH remote + `-u origin main` | Works reliably / 稳定可用 |
+The corrected example is a documentation fixture, not a claimed successful
+network run. It requires an existing SSH remote and commits; it does not create
+a GitHub repository. / 修正后的示例不冒充已实测经验，也不负责创建远程仓库。
 
-The generated skill captures all four attempts, so future sessions jump straight to step 4.
-生成的 skill 记录了全部四次尝试，下次直接从第 4 步开始。
-
-→ [Full generated skill / 完整 skill](examples/github-push.md)
-→ [JSON input format / JSON 输入格式](examples/github-push-input.json)
-
-</details>
+→ [Generated skill / 生成示例](examples/github-push.md)
+→ [JSON input / JSON 输入](examples/github-push-input.json)
 
 ## How It Works / 工作流程
 
@@ -147,7 +191,7 @@ The generated skill captures all four attempts, so future sessions jump straight
          │
          ▼
   ┌─────────────┐
-  │ 6. INSTALL   │  保存到 ~/.claude/skills/{name}.md
+  │ 6. INSTALL   │  保存到 ~/.claude/skills/<name>/SKILL.md
   │    安装      │
   └─────────────┘
 ```
@@ -160,15 +204,14 @@ Every skill generated by skill-forge includes / 每个 skill 包含：
 |----------|---------|
 | **Environment** / 环境 | OS, shell, network, tools — so the agent knows *where* it's running / 让 agent 知道自己在什么环境下运行 |
 | **When to use** / 触发条件 | Natural trigger phrases that activate the skill / 触发 skill 的自然语言短语 |
-| **Quick start** / 快速上手 | Minimal 2-3 command path for the most common case / 最常见场景的最简 2-3 条命令 |
+| **Quick start** / 快速上手 | Minimal commands with explicit prerequisites / 带明确前提的最简命令路径 |
 | **Proven approach** / 可行方案 | Step-by-step commands + the *why* / 逐条命令 + 每一步的环境原因 |
-| **What this replaces** / 替代了什么 | The failed discovery process this skill eliminates / 这个 skill 让 agent 不再需要重新踩坑 |
 | **Pitfalls** / 避坑指南 | Failed attempts, their environment causes, and symptoms / 失败的做法、环境原因、具体表现 |
 | **Verification** / 验证 | How to confirm success + expected output / 验证命令 + 预期输出 |
 
 ## Comparison with skill-creator / 与 skill-creator 的对比
 
-This project complements Anthropic's official [skill-creator](https://skills.sh/anthropics/skills/skill-creator) (193K+ installs).
+This project complements Anthropic's official [skill-creator](https://skills.sh/anthropics/skills/skill-creator).
 
 | | skill-forge | skill-creator (Anthropic) |
 |---|---|---|
@@ -186,14 +229,19 @@ skill-forge/
 ├── SKILL.md                          # 核心 skill 定义（被安装到 ~/.claude/skills/）
 ├── CLAUDE.md                         # 项目上下文（Claude Code 进入目录时加载）
 ├── templates/
-│   └── skill-template.md             # 生成 skill 用的模板（含前端验证指导）
+│   └── skill-template.md             # 动态生成模板（frontmatter 始终在第一行）
 ├── scripts/
 │   ├── install.sh                    # 一键安装脚本
 │   ├── generate.py                   # 独立生成器（交互式 / JSON 输入 / dry-run / validate）
+│   ├── install.py                    # 跨平台完整安装与备份
+│   ├── skill_common.py               # 路径、YAML 与安全写入
 │   └── quick_validate.py             # Skill 质量检查器（YAML / 占位符 / 触发词 / 描述）
 ├── examples/
 │   ├── github-push.md                # 示例：生成的 skill 长什么样
 │   └── github-push-input.json        # 示例：JSON 输入格式
+├── requirements.txt                 # PyYAML 依赖
+├── tests/                           # 回归与安装集成测试
+├── docs/                            # 验证方法与后续路线图
 └── LICENSE
 ```
 
@@ -212,6 +260,29 @@ Not worth it / 不值得：
 - ❌ One-off tasks / 不会再做的一次性任务
 - ❌ Generic solutions in official docs / 官方文档里已经写清楚的
 - ❌ Tasks that worked first try with no dead ends / 一次就成功的任务（没什么好记录的）
+
+## Tests and roadmap / 测试与路线图
+
+```bash
+python -m unittest discover -s tests -v
+python scripts/quick_validate.py examples/github-push.md --strict
+```
+
+A [GitHub Actions template](ci/github-actions-tests.yml) runs this suite on
+Windows, macOS and Linux, Python 3.10 and 3.13. To enable it, copy the template
+to `.github/workflows/tests.yml` and push using a credential with `workflow`
+permission. The current GitHub login cannot create workflow files, so the
+template is provided without enabling CI.
+提供跨平台 CI 模板；当前登录缺少 workflow 权限，尚未启用自动运行。
+The suite uses temporary user/skills directories and never executes generated
+Git push commands. [Validation guide](docs/validation.md) distinguishes local
+automation from Claude Code integration checks.
+
+The experience-management and learning-system ideas from the review are
+tracked in the [roadmap](docs/roadmap.md), with acceptance criteria. Automated
+merge/deduplication, hooks, rescue recommendations and A/B reporting are planned
+work; the current tools generate and statically validate skills.
+经验管理、自动发现和效果度量见路线图；当前实现不宣称具备这些能力。
 
 ## Contributing / 贡献
 

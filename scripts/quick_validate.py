@@ -3,10 +3,9 @@
 
 Checks:
   - Frontmatter is valid YAML
-  - Required fields present (name, description, environment)
+  - Required fields and types; optional Skill Forge environment profile
   - No placeholder text remains
-  - Trigger phrases are specific enough
-  - Commands look concrete
+  - Heuristic trigger/command wording hints (not behavioral tests)
   - Environment section is complete
   - Description is sufficiently "pushy"
 
@@ -15,68 +14,39 @@ Usage:
   python scripts/quick_validate.py <path-to-skill.md> --strict
 """
 
+import argparse
 import re
 import sys
 import textwrap
 from pathlib import Path
-
-
-def extract_frontmatter(text: str) -> tuple[dict | None, str, str]:
-    """Parse YAML frontmatter from skill text. Returns (data, frontmatter_raw, body)."""
-    if not text.startswith("---"):
-        return None, "", text
-
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return None, "", text
-
-    return _parse_simple_yaml(parts[1]), parts[1], parts[2]
-
-
-def _parse_simple_yaml(raw: str) -> dict:
-    """Minimal YAML parser for frontmatter — avoids PyYAML dependency."""
-    data = {}
-    current_key = None
-    current_value = ""
-    indent = 0
-
-    lines = raw.split("\n")
-    for line in lines:
-        if not line.strip() or line.strip().startswith("#"):
-            continue
-
-        # Detect key: value lines
-        match = re.match(r"^(\s*)([\w-]+)\s*:\s*(.*)?$", line)
-        if match and not match.group(1) or (current_key and len(match.group(1)) <= indent):
-            # Save previous key
-            if current_key:
-                data[current_key] = current_value.strip() if current_value.strip() else None
-            current_key = match.group(2)
-            current_value = match.group(3) or ""
-            indent = 0
-        elif current_key and line.startswith("  "):
-            # Continuation of previous value (multi-line)
-            if not indent:
-                indent = len(line) - len(line.lstrip())
-            continuation = line[indent:] if indent else line.strip()
-            current_value = current_value + " " + continuation.strip()
-        elif current_key:
-            # Save previous key, start new
-            data[current_key] = current_value.strip() if current_value.strip() else None
-            current_key = None
-            current_value = ""
-
-    if current_key:
-        data[current_key] = current_value.strip() if current_value.strip() else None
-
-    return data
+from skill_common import ENV_KEYS, extract_frontmatter, validate_name
 
 
 def extract_section(text: str, heading: str) -> str | None:
-    """Extract content under a markdown heading."""
-    pattern = rf"^##\s+{re.escape(heading)}.*?\n(.*?)(?=^##\s|\Z)"
-    match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
-    return match.group(1).strip() if match else None
+    """Extract a level-two section without treating fenced text as headings."""
+    captured, active, fence = [], False, None
+    for line in text.splitlines():
+        if fence is None and re.match(r"^##[ \t]+", line):
+            if active:
+                break
+            if re.match(rf"^##[ \t]+{re.escape(heading)}(?:[ \t]|$)", line):
+                active = True
+                continue
+        if active:
+            captured.append(line)
+        fence = _next_fence(line, fence)
+    return "\n".join(captured).strip() if active else None
+
+
+def _next_fence(line, fence):
+    match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if match:
+        marker, suffix = match.groups()
+        if fence is None:
+            return marker
+        if marker[0] == fence[0] and len(marker) >= len(fence) and not suffix.strip():
+            return None
+    return fence
 
 
 def extract_triggers(skill_text: str) -> list[str]:
@@ -90,64 +60,96 @@ def extract_triggers(skill_text: str) -> list[str]:
 
 def extract_code_blocks(skill_text: str) -> list[str]:
     """Extract content from all code blocks."""
-    blocks = re.findall(r"```(?:bash|shell)?\s*\n(.*?)```", skill_text, re.DOTALL)
-    return [b.strip() for b in blocks]
+    blocks, captured, fence = [], [], None
+    for line in skill_text.splitlines():
+        next_fence = _next_fence(line, fence)
+        if fence is not None and next_fence is None:
+            content = "\n".join(captured).strip()
+            if content:
+                blocks.append(content)
+            captured = []
+        elif fence is not None:
+            captured.append(line)
+        fence = next_fence
+    return blocks
 
+
+def _has_command(text):
+    return any(line.strip() and not line.lstrip().startswith(("#", "//"))
+               for block in extract_code_blocks(text) for line in block.splitlines())
 
 def validate(skill_path: str, strict: bool = False) -> tuple[list[str], list[str], list[str]]:
-    """Validate a skill file. Returns (errors, warnings, suggestions)."""
-    errors = []
-    warnings = []
-    suggestions = []
-
     path = Path(skill_path)
-    if not path.exists():
-        errors.append(f"File not found: {skill_path}")
-        return errors, warnings, suggestions
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return [f"Cannot read skill: {exc}"], [], []
+    return validate_text(text, strict=strict, skill_path=str(path))
 
-    text = path.read_text(encoding="utf-8")
-    frontmatter, fm_raw, body = extract_frontmatter(text)
 
-    # === Frontmatter checks ===
+def validate_text(text: str, strict: bool = False, skill_path: str = "") -> tuple[list[str], list[str], list[str]]:
+    """Structural/schema checks; never executes commands or predicts model routing."""
+    errors, warnings, suggestions = [], [], []
+    placeholders = re.findall(r"\{\{.*?\}\}", text, re.DOTALL)
+    if placeholders:
+        errors.append(f"Unresolved placeholder text: {', '.join(placeholders)}")
+    try:
+        frontmatter, _, body = extract_frontmatter(text)
+    except (ValueError, RecursionError) as exc:
+        return errors + [f"Malformed frontmatter: {exc}"], warnings, suggestions
     if frontmatter is None:
-        errors.append("Missing or malformed YAML frontmatter (file must start with ---)")
-        return errors, warnings, suggestions
-
-    # Required fields
-    required = ["name", "description"]
-    for field in required:
-        if field not in frontmatter or not frontmatter[field]:
-            errors.append(f"Missing required frontmatter field: '{field}'")
-
-    # Environment in frontmatter
-    if "environment" not in frontmatter:
-        warnings.append("Missing 'environment' key in frontmatter — environment context is what makes skills personalized")
-    elif isinstance(frontmatter.get("environment"), dict):
-        env = frontmatter["environment"]
-        for key in ["os", "shell", "network", "tools"]:
-            if key not in env or not env[key]:
-                warnings.append(f"Missing environment.{key} — incomplete environment context")
-
-    # Compatibility
-    if "compatibility" not in frontmatter:
-        warnings.append("Missing 'compatibility' field — list required tools/versions")
-
-    # Description quality
-    desc = frontmatter.get("description", "")
-    if desc:
+        return errors + ["Missing YAML frontmatter: first line must be --- with a closing delimiter"], warnings, suggestions
+    for key in ("name", "description"):
+        value = frontmatter.get(key)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"Frontmatter '{key}' must be a non-empty string")
+    name = frontmatter.get("name")
+    try:
+        validate_name(name)
+    except ValueError as exc:
+        errors.append(str(exc))
+    desc = frontmatter.get("description")
+    if isinstance(desc, str) and desc.strip():
+        if len(desc) > 1024:
+            errors.append("Description exceeds 1024 characters")
         _check_description(desc, errors, warnings, suggestions)
+    env = frontmatter.get("environment")
+    if "environment" not in frontmatter:
+        warnings.append("Missing environment mapping (Skill Forge profile)")
+    elif not isinstance(env, dict):
+        errors.append("Frontmatter environment must be a mapping")
     else:
-        errors.append("Description is empty — this is the primary trigger mechanism")
-
-    # Name format
-    name = frontmatter.get("name", "")
-    if name and (" " in name or name != name.lower()):
-        warnings.append(f"Skill name '{name}' should be kebab-case (lowercase, hyphens)")
-
-    # === Body checks ===
+        for key in ENV_KEYS:
+            if not isinstance(env.get(key), str) or not env[key].strip():
+                errors.append(f"environment.{key} must be a non-empty string")
+    compatibility = frontmatter.get("compatibility")
+    if "compatibility" not in frontmatter:
+        warnings.append("Missing compatibility string (Skill Forge profile)")
+    elif not isinstance(compatibility, str) or not compatibility.strip():
+        errors.append("compatibility must be a non-empty string")
     _check_body(body, skill_path, errors, warnings, suggestions, strict)
-
+    if strict:
+        if skill_path and Path(skill_path).name == "SKILL.md" and Path(skill_path).parent.name != name:
+            errors.append("Skill directory name must match frontmatter name")
+        verification = extract_section(body, "Verification")
+        if not verification or not _has_command(verification) or not re.search(r"Expected output:\s*\S", verification):
+            errors.append("Verification requires a concrete code block and non-empty 'Expected output:'")
+        for section in ("Quick start", "Proven approach"):
+            value = extract_section(body, section)
+            if not value or not _has_command(value):
+                errors.append(f"{section} requires at least one non-empty command block")
+        if env is None or compatibility is None:
+            errors.append("Strict Skill Forge profile requires environment and compatibility")
+        if _unclosed_fence(body):
+            errors.append("Unclosed Markdown code fence")
     return errors, warnings, suggestions
+
+
+def _unclosed_fence(body):
+    fence = None
+    for line in body.splitlines():
+        fence = _next_fence(line, fence)
+    return fence is not None
 
 
 def _check_description(desc: str, errors: list, warnings: list, suggestions: list):
@@ -155,7 +157,7 @@ def _check_description(desc: str, errors: list, warnings: list, suggestions: lis
     desc_lower = desc.lower()
     words = len(desc.split())
 
-    if words < 6:
+    if len(desc.strip()) < 24:
         warnings.append(
             f"Description is very short ({words} words). A good description claims the "
             "contexts where this skill should trigger. Consider making it 'pushy' — "
@@ -183,19 +185,6 @@ def _check_description(desc: str, errors: list, warnings: list, suggestions: lis
 def _check_body(body: str, skill_path: str, errors: list, warnings: list,
                 suggestions: list, strict: bool):
     """Check the markdown body for issues."""
-
-    # Placeholder detection
-    placeholders = re.findall(r"\{\{.*?\}\}", body)
-    # Filter out valid template variables (only used in template, not in generated skills)
-    filtered = [p for p in placeholders if
-                not any(p.startswith(f"{{{{{kw.upper()}}}}}") for kw in
-                        ["SKILL_NAME", "ONE_LINE_DESCRIPTION", "OS", "SHELL", "NETWORK",
-                         "TOOLS", "TRIGGER", "STEP", "BAD_APPROACH", "WHY_FAILS",
-                         "VERIFY_COMMAND", "ADDITIONAL_NOTES", "COMPATIBILITY",
-                         "ENVIRONMENT_WHY", "ENVIRONMENT_HINT", "TRIGGER_CONTEXT_HINT",
-                         "QUICK_START", "EXPECTED_OUTPUT", "SEE_ALSO", "FAIL_SYMPTOM"])]
-    if filtered:
-        errors.append(f"Placeholder text found: {', '.join(filtered)}")
 
     # TODO/FIXME detection
     todos = re.findall(r"\b(TODO|FIXME|HACK|XXX)\b", body, re.IGNORECASE)
@@ -235,15 +224,10 @@ def _check_body(body: str, skill_path: str, errors: list, warnings: list,
 def _check_trigger(trigger: str, idx: int, errors: list, warnings: list, suggestions: list):
     """Check a single trigger phrase."""
     words = trigger.split()
-    if len(words) < 2:
+    if len(words) < 2 and len(trigger.strip()) < 6:
         warnings.append(
             f"Trigger #{idx} ('{trigger}') is very short. Generic one-word triggers "
             "cause over-firing. Make it a natural phrase: 'push this to GitHub' not 'push'."
-        )
-    if '"' in trigger or "'" in trigger:
-        warnings.append(
-            f"Trigger #{idx} contains quotes — trigger phrases should be natural speech, "
-            "not quoted strings. Remove the quotes."
         )
 
 
@@ -283,29 +267,26 @@ def _check_sections(body: str, errors: list, warnings: list):
     """Check required sections exist."""
     required_sections = ["Environment", "When to use", "Proven approach", "Pitfalls"]
     for section in required_sections:
-        if not re.search(rf"^##\s+{section}", body, re.MULTILINE):
-            # Pitfalls might also be titled "Pitfalls — what NOT to do"
-            alt_pattern = rf"^##\s+{re.escape(section)}\b"
-            if not re.search(alt_pattern, body, re.MULTILINE):
-                warnings.append(f"Missing recommended section: '## {section}'")
+        if not extract_section(body, section):
+            warnings.append(f"Missing or empty recommended section: '## {section}'")
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python quick_validate.py <path-to-skill.md> [--strict]")
-        sys.exit(1)
-
-    skill_path = sys.argv[1]
-    strict = "--strict" in sys.argv
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("skill_path")
+    parser.add_argument("--strict", action="store_true")
+    args = parser.parse_args()
+    skill_path, strict = args.skill_path, args.strict
 
     errors, warnings, suggestions = validate(skill_path, strict=strict)
 
-    name = Path(skill_path).stem
+    path = Path(skill_path).resolve()
+    name = path.parent.name if path.name == "SKILL.md" else path.stem
 
     # Print results
     total_issues = len(errors) + len(warnings) + len(suggestions)
     if total_issues == 0:
-        print(f"✓ {name}: Passed — no issues found.")
+        print(f"PASS {name}: no structural issues found.")
         sys.exit(0)
 
     print(f"\n{'=' * 60}")
@@ -314,22 +295,22 @@ def main():
     print(f"{'=' * 60}\n")
 
     if errors:
-        print("❌ ERRORS (must fix):")
+        print("ERRORS (must fix):")
         for e in errors:
-            print(f"  • {e}")
+            print(f"  - {e}")
         print()
 
     if warnings:
-        print("⚠️  WARNINGS (should fix):")
+        print("WARNINGS (should fix):")
         for w in warnings:
-            wrapped = textwrap.fill(w, width=70, initial_indent="  • ", subsequent_indent="    ")
+            wrapped = textwrap.fill(w, width=70, initial_indent="  - ", subsequent_indent="    ")
             print(wrapped)
         print()
 
     if suggestions:
-        print("💡 SUGGESTIONS:")
+        print("SUGGESTIONS:")
         for s in suggestions:
-            wrapped = textwrap.fill(s, width=70, initial_indent="  • ", subsequent_indent="    ")
+            wrapped = textwrap.fill(s, width=70, initial_indent="  - ", subsequent_indent="    ")
             print(wrapped)
         print()
 

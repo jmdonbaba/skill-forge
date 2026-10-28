@@ -1,296 +1,194 @@
 #!/usr/bin/env python3
-"""Generate a personalized Claude Code skill from a JSON file or interactive input.
+"""Generate a skill interactively or from JSON; validate before publishing."""
 
-Usage:
-  python scripts/generate.py                    # Interactive mode
-  python scripts/generate.py input.json         # From JSON file
-  python scripts/generate.py input.json --dry-run   # Print to stdout, don't save
-  python scripts/generate.py input.json --validate  # Run validation after generation
-"""
-
-import os
-import sys
+import argparse
+from datetime import datetime, timezone
 import json
-import subprocess
-from datetime import datetime
 from pathlib import Path
+import re
 
-TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "skill-template.md"
-SKILLS_DIR = Path.home() / ".claude" / "skills"
+from skill_common import SKILLS_DIR, save_skill, validate_name, yaml
+from quick_validate import validate_text
+
+TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "skill-template.md"
 
 
 def load_template() -> str:
-    """Load the skill template."""
     return TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
-def get_skill_dir() -> Path:
-    """Ensure the skills directory exists and return it."""
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    return SKILLS_DIR
+def _text(value, label, required=True):
+    if not isinstance(value, str) or (required and not value.strip()):
+        raise ValueError(f"{label} must be a {'non-empty ' if required else ''}string")
+    return value
+
+
+def _collection(data, array_key, pattern, fields=None):
+    """Read either arrays or all legacy numbered entries, without truncation."""
+    indexed = sorted({int(m.group(1)) for key in data if (m := re.fullmatch(pattern, key))})
+    if array_key in data:
+        if indexed:
+            raise ValueError(f"Use either {array_key} or indexed fields, not both")
+        values = data[array_key]
+        if not isinstance(values, list):
+            raise ValueError(f"{array_key} must be an array")
+    elif fields:
+        values = [{field: data.get(key.format(i=i), "") for field, key in fields.items()} for i in indexed]
+    else:
+        prefix = "TRIGGER" if array_key == "triggers" else "QUICK_START_COMMAND"
+        values = [data[f"{prefix}_{i}"] for i in indexed]
+    if fields:
+        # Empty legacy slots are supported, but partial entries must not vanish.
+        values = [value for value in values if value != {key: "" for key in fields}]
+        for i, value in enumerate(values, 1):
+            if not isinstance(value, dict) or set(value) != set(fields):
+                raise ValueError(f"{array_key}[{i}] must contain {', '.join(fields)}")
+            for field in fields:
+                _text(value[field], f"{array_key}[{i}].{field}")
+    else:
+        values = [value for value in values if value != ""]
+        for i, value in enumerate(values, 1):
+            _text(value, f"{array_key}[{i}]")
+    if not values:
+        raise ValueError(f"{array_key} requires at least one entry")
+    return values
+
+
+def code_block(command):
+    fence = '`' * max(3, max((len(m.group()) + 1 for m in re.finditer(r'`+', command)), default=3))
+    return f"{fence}bash\n{command}\n{fence}"
+
+
+def table_cell(value):
+    return value.replace("|", "\\|").replace("\r\n", "\n").replace("\n", "<br>")
 
 
 def fill_template(template: str, data: dict) -> str:
-    """Fill template placeholders with values.
-
-    Handles {{VARIABLE}} placeholders. List values are joined with commas.
-    Multi-line values are preserved.
-    """
-    result = template
-    for key, value in data.items():
-        placeholder = f"{{{{{key}}}}}"
-        if placeholder not in result:
-            # Try uppercase conversion
-            upper_placeholder = f"{{{{{key.upper()}}}}}"
-            if upper_placeholder in result:
-                placeholder = upper_placeholder
-        if isinstance(value, list):
-            value = "\n- ".join(value)
-        result = result.replace(placeholder, str(value))
-    return result
+    if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
+        raise ValueError("Input JSON must be an object with string keys")
+    required = ("SKILL_NAME", "ONE_LINE_DESCRIPTION", "TRIGGER_CONTEXT_HINT", "ENVIRONMENT_HINT",
+                "COMPATIBILITY", "OS", "SHELL", "NETWORK", "TOOLS", "ENVIRONMENT_WHY",
+                "VERIFY_COMMAND", "EXPECTED_OUTPUT")
+    values = {key: _text(data.get(key), key) for key in required}
+    validate_name(values["SKILL_NAME"])
+    for key in ("QUICK_START_NOTE", "ADDITIONAL_NOTES", "SEE_ALSO"):
+        values[key] = _text(data.get(key, ""), key, required=False)
+    triggers = _collection(data, "triggers", r"TRIGGER_(\d+)")
+    quick_start = _collection(data, "quick_start", r"QUICK_START_COMMAND_(\d+)")
+    steps = _collection(data, "steps", r"STEP_(\d+)_(?:TITLE|COMMAND|WHY)",
+                        {"title": "STEP_{i}_TITLE", "command": "STEP_{i}_COMMAND", "why": "STEP_{i}_WHY"})
+    pitfalls = _collection(data, "pitfalls", r"(?:BAD_APPROACH|WHY_FAILS|FAIL_SYMPTOM)_(\d+)",
+                           {"approach": "BAD_APPROACH_{i}", "why": "WHY_FAILS_{i}", "symptom": "FAIL_SYMPTOM_{i}"})
+    frontmatter = {
+        "name": values["SKILL_NAME"],
+        "description": f"{values['ONE_LINE_DESCRIPTION'].rstrip('.')}. Use when the user {values['TRIGGER_CONTEXT_HINT']}; especially {values['ENVIRONMENT_HINT']}.",
+        "compatibility": values["COMPATIBILITY"],
+        "environment": {key: values[key.upper()] for key in ("os", "shell", "network", "tools")},
+    }
+    values.update({
+        "FRONTMATTER": yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).rstrip(),
+        "GENERATED_AT": datetime.now(timezone.utc).isoformat(),
+        "TRIGGERS": "\n".join(f"- {trigger}" for trigger in triggers),
+        "QUICK_START": code_block("\n".join(quick_start)),
+        "STEPS": "\n\n".join(f"### {i}. {step['title']}\n\n{code_block(step['command'])}\n\n{step['why']}" for i, step in enumerate(steps, 1)),
+        "PITFALLS": "\n".join("| " + " | ".join(table_cell(p[field]) for field in ("approach", "why", "symptom")) + " |" for p in pitfalls),
+        "VERIFICATION": code_block(values["VERIFY_COMMAND"]),
+    })
+    values.update({key + "_TABLE": table_cell(values[key]) for key in ("OS", "SHELL", "NETWORK", "TOOLS")})
+    # A single pass avoids interpreting user content as another variable.
+    return re.sub(r"\{\{([A-Z0-9_]+)\}\}", lambda m: values.get(m.group(1), m.group()), template)
 
 
 def collect_triggers() -> list[str]:
-    """Collect trigger phrases interactively."""
     triggers = []
-    print("Enter trigger phrases (natural ways the user would ask for this).")
-    print("Press Enter on an empty line when done.\n")
-    i = 1
-    while True:
-        t = input(f"  Trigger {i}: ").strip()
-        if not t:
-            break
-        triggers.append(t)
-        i += 1
-        if i > 8:  # sanity cap
-            break
+    print("Enter trigger phrases; empty line to finish.")
+    while value := input(f"  Trigger {len(triggers) + 1}: ").strip():
+        triggers.append(value)
     return triggers
 
 
 def collect_steps() -> list[dict]:
-    """Collect proven approach steps interactively."""
     steps = []
-    print("Enter the steps that actually worked (in order).")
-    print("Press Enter on an empty title when done.\n")
-    i = 1
-    while True:
-        print(f"--- Step {i} ---")
-        title = input("  Title: ").strip()
-        if not title:
-            break
-        command = input("  Command: ").strip()
-        why = input("  Why this is needed: ").strip()
-        steps.append({"title": title, "command": command, "why": why})
-        i += 1
-        if i > 10:
-            break
+    print("Enter successful steps; empty title to finish.")
+    while title := input(f"  Step {len(steps) + 1} title: ").strip():
+        steps.append({"title": title, "command": input("  Command: "), "why": input("  Why: ")})
     return steps
 
 
 def collect_pitfalls() -> list[dict]:
-    """Collect pitfalls interactively."""
     pitfalls = []
-    print("Enter failed approaches (what was tried and failed).")
-    print("Press Enter on an empty approach when done.\n")
-    i = 1
-    while True:
-        print(f"--- Pitfall {i} ---")
-        approach = input("  Failed approach: ").strip()
-        if not approach:
-            break
-        why = input("  Environment cause (why it failed): ").strip()
-        symptom = input("  What happened (symptom): ").strip()
-        pitfalls.append({"approach": approach, "why": why, "symptom": symptom})
-        i += 1
-        if i > 8:
-            break
+    print("Enter observed failures; empty approach to finish.")
+    while approach := input(f"  Failed approach {len(pitfalls) + 1}: ").strip():
+        pitfalls.append({"approach": approach, "why": input("  Cause or hypothesis: "), "symptom": input("  Observed symptom: ")})
     return pitfalls
 
 
-def interactive_generate():
-    """Interactive Q&A to build a skill."""
-    print()
-    print("=" * 60)
-    print("  skill-forge")
-    print("  Forge your hard-won knowledge into a reusable skill")
-    print("=" * 60)
-    print()
-
-    data = {}
-
-    # Basic info
-    print("── Basic info ──")
-    data["SKILL_NAME"] = input("Skill name (kebab-case, e.g. github-push): ").strip()
-    data["ONE_LINE_DESCRIPTION"] = input("One-line description: ").strip()
-    data["TRIGGER_CONTEXT_HINT"] = input(
-        "Trigger context hint (e.g., 'mentions pushing, uploading, or putting code on GitHub'): "
-    ).strip()
-    data["ENVIRONMENT_HINT"] = input(
-        "Environment hint (e.g., 'from Windows', 'behind a corporate proxy'): "
-    ).strip()
-    data["COMPATIBILITY"] = input("Required tools/versions (e.g., 'git >=2.40, ssh'): ").strip()
-
-    # Environment
-    print("\n── Environment ──")
-    data["OS"] = input("OS and version (e.g. Windows 11 Home China 10.0.26100): ").strip()
-    data["SHELL"] = input("Shell (e.g. Git Bash / mingw64, PowerShell 7, zsh 5.9): ").strip()
-    data["NETWORK"] = input("Network constraints (e.g. GFW, corporate proxy, none): ").strip()
-    data["TOOLS"] = input("Key tools used: ").strip()
-    data["ENVIRONMENT_WHY"] = input(
-        "Why the environment matters (one sentence): "
-    ).strip()
-
-    # Triggers
-    print("\n── Trigger phrases ──")
-    triggers = collect_triggers()
-    for i in range(5):
-        data[f"TRIGGER_{i + 1}"] = triggers[i] if i < len(triggers) else ""
-
-    # Quick start
-    print("\n── Quick start (the minimal path) ──")
-    qs_commands = []
-    print("Enter the 1-3 most critical commands. Empty line when done.")
-    i = 1
-    while i <= 3:
-        cmd = input(f"  Command {i}: ").strip()
-        if not cmd:
-            break
-        qs_commands.append(cmd)
-        i += 1
-    for j in range(3):
-        data[f"QUICK_START_COMMAND_{j + 1}"] = qs_commands[j] if j < len(qs_commands) else ""
-    data["QUICK_START_NOTE"] = input("Quick start note (optional): ").strip()
-
-    # Proven approach
-    print("\n── Proven approach ──")
-    steps = collect_steps()
-    for i in range(3):
-        if i < len(steps):
-            data[f"STEP_{i + 1}_TITLE"] = steps[i]["title"]
-            data[f"STEP_{i + 1}_COMMAND"] = steps[i]["command"]
-            data[f"STEP_{i + 1}_WHY"] = steps[i]["why"]
-        else:
-            data[f"STEP_{i + 1}_TITLE"] = ""
-            data[f"STEP_{i + 1}_COMMAND"] = ""
-            data[f"STEP_{i + 1}_WHY"] = ""
-
-    # Pitfalls
-    print("\n── Pitfalls ──")
-    pitfalls = collect_pitfalls()
-    for i in range(3):
-        if i < len(pitfalls):
-            data[f"BAD_APPROACH_{i + 1}"] = pitfalls[i]["approach"]
-            data[f"WHY_FAILS_{i + 1}"] = pitfalls[i]["why"]
-            data[f"FAIL_SYMPTOM_{i + 1}"] = pitfalls[i]["symptom"]
-        else:
-            data[f"BAD_APPROACH_{i + 1}"] = ""
-            data[f"WHY_FAILS_{i + 1}"] = ""
-            data[f"FAIL_SYMPTOM_{i + 1}"] = ""
-
-    # Verification
-    print("\n── Verification ──")
-    data["VERIFY_COMMAND"] = input("Verification command: ").strip()
-    data["EXPECTED_OUTPUT"] = input("Expected output (one line): ").strip()
-
-    # Notes
-    data["ADDITIONAL_NOTES"] = input("Additional notes (optional): ").strip()
-    data["SEE_ALSO"] = input("See also (links or related skills, optional): ").strip()
-
-    # Generate
-    print("\n" + "=" * 60)
-    print("  Generating skill...")
-    print("=" * 60)
-
-    template = load_template()
-    content = fill_template(template, data)
-
-    # Header comment
-    header = (
-        f"<!-- Generated by skill-forge on {datetime.now().isoformat()} -->\n"
-        f"<!-- Environment: {data['OS']} | {data['SHELL']} | {data['NETWORK']} -->\n\n"
-    )
-
-    skill_path = get_skill_dir() / f"{data['SKILL_NAME']}.md"
-    skill_path.write_text(header + content, encoding="utf-8")
-
-    print(f"\n  Skill saved to: {skill_path}")
-    print(f"  Invoke with:     /{data['SKILL_NAME']}")
-    print(f"  Edit at:         {skill_path}")
-    print()
+def collect_input() -> dict:
+    prompts = {
+        "SKILL_NAME": "Skill name (kebab-case)", "ONE_LINE_DESCRIPTION": "One-line description",
+        "TRIGGER_CONTEXT_HINT": "When should this trigger? User…", "ENVIRONMENT_HINT": "Applicable environment",
+        "COMPATIBILITY": "Required tools/versions", "OS": "OS and version", "SHELL": "Shell",
+        "NETWORK": "Network/proxy constraints", "TOOLS": "Tools and versions", "ENVIRONMENT_WHY": "Why this environment matters",
+    }
+    data = {key: input(prompt + ": ").strip() for key, prompt in prompts.items()}
+    data["triggers"] = collect_triggers()
+    commands = []
+    while command := input(f"  Quick start command {len(commands) + 1} (empty to finish): "):
+        commands.append(command)
+    data["quick_start"] = commands
+    data["QUICK_START_NOTE"] = input("Quick start note (optional): ")
+    data["steps"] = collect_steps()
+    data["pitfalls"] = collect_pitfalls()
+    for key, prompt in (("VERIFY_COMMAND", "Verification command"), ("EXPECTED_OUTPUT", "Expected output"),
+                        ("ADDITIONAL_NOTES", "Additional notes (optional)"), ("SEE_ALSO", "See also (optional)")):
+        data[key] = input(prompt + ": ")
+    return data
 
 
-def from_json(json_path: str, dry_run: bool = False, validate: bool = False):
-    """Generate skill from a JSON input file."""
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    template = load_template()
-    content = fill_template(template, data)
-
-    header = (
-        f"<!-- Generated by skill-forge on {datetime.now().isoformat()} -->\n"
-        f"<!-- Environment: {data.get('OS', '?')} | "
-        f"{data.get('SHELL', '?')} | {data.get('NETWORK', '?')} -->\n\n"
-    )
-
-    full_content = header + content
-    skill_name = data.get("SKILL_NAME", "unknown")
-
+def generate_skill(data, *, dry_run=False, validate=False, strict=False, skills_dir=SKILLS_DIR, force=False):
+    content = fill_template(load_template(), data)
+    errors, warnings, _ = validate_text(content, strict=strict)
+    if errors or (strict and warnings):
+        raise ValueError("Validation failed:\n" + "\n".join(errors + (warnings if strict else [])))
     if dry_run:
-        print(full_content)
-        return
-
-    skill_path = get_skill_dir() / f"{skill_name}.md"
-    skill_path.write_text(full_content, encoding="utf-8")
-
-    print(f"  Skill saved to: {skill_path}")
-    print(f"  Invoke with:     /{skill_name}")
-
-    if validate:
-        print(f"\n  Validating...")
-        _run_validation(skill_path)
+        print(content, end="")
+        return None
+    path = save_skill(content, Path(skills_dir), data["SKILL_NAME"], force=force)
+    print(f"Skill saved to: {path}\nInvoke with: /{data['SKILL_NAME']}")
+    if validate or strict:
+        print("Structural validation passed; commands and trigger behavior were not executed.")
+        for warning in warnings:
+            print(f"Warning: {warning}")
+    return path
 
 
-def _run_validation(skill_path: Path) -> None:
-    """Run quick_validate.py on the generated skill."""
-    validator = Path(__file__).parent / "quick_validate.py"
-    if not validator.exists():
-        print(f"  Warning: validator not found at {validator}")
-        return
+def from_json(json_path: str, dry_run=False, validate=False, **kwargs):
+    data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    return generate_skill(data, dry_run=dry_run, validate=validate, **kwargs)
 
+
+def interactive_generate(**kwargs):
+    return generate_skill(collect_input(), **kwargs)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", nargs="?", help="JSON input; omit for interactive mode")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--validate", action="store_true", help="Report validation (structural errors always block saving)")
+    parser.add_argument("--strict", action="store_true", help="Also check semantic completeness; warnings block saving")
+    parser.add_argument("--force", action="store_true", help="Replace existing skill after backup")
+    parser.add_argument("--skills-dir", type=Path, default=SKILLS_DIR)
+    args = parser.parse_args()
+    options = {key: value for key, value in vars(args).items() if key != "input"}
     try:
-        result = subprocess.run(
-            [sys.executable, str(validator), str(skill_path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr)
-        if result.returncode != 0:
-            print(f"  Validation found issues — review and fix before using.")
-    except FileNotFoundError:
-        print(f"  Warning: Python not available, skipping validation.")
-    except subprocess.TimeoutExpired:
-        print(f"  Warning: Validation timed out, check manually.")
-
-
-def print_usage():
-    print(__doc__)
+        if args.input:
+            from_json(args.input, **options)
+        else:
+            interactive_generate(**options)
+    except (OSError, ValueError, EOFError) as exc:
+        parser.exit(1, f"Error: {exc}\n")
 
 
 if __name__ == "__main__":
-    dry_run = "--dry-run" in sys.argv
-    do_validate = "--validate" in sys.argv
-
-    # Filter out flags to find the positional argument
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-
-    if len(args) > 0:
-        from_json(args[0], dry_run=dry_run, validate=do_validate)
-    else:
-        if dry_run:
-            print("Error: --dry-run requires a JSON input file.")
-            sys.exit(1)
-        interactive_generate()
+    main()

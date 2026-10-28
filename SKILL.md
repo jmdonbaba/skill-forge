@@ -14,6 +14,17 @@ You help the user turn a successfully-completed task into a reusable Claude Code
 
 **Your job**: extract what happened, generate a skill that prevents repeating the same dead ends, validate it, and tune the description so it triggers reliably.
 
+## Bundled resources
+
+Use the directory containing this SKILL.md as the resource root, never the
+current project directory. Claude Code substitutes `${CLAUDE_SKILL_DIR}` with
+that directory. For older clients without substitution, use the absolute
+directory of the loaded skill (personal default: `~/.claude/skills/skill-forge`).
+It contains `templates/skill-template.md`, `scripts/generate.py`,
+`scripts/quick_validate.py`, `scripts/skill_common.py` and `requirements.txt`.
+Python 3.10+ and PyYAML are required; install dependencies with
+`python -m pip install -r "${CLAUDE_SKILL_DIR}/requirements.txt"` if missing.
+
 ## Process
 
 ### Step 1 — Gather the story
@@ -29,9 +40,9 @@ Four categories you need:
 **The failures** — this is the most valuable part of the skill
 - What approach was tried first? Why did it fail?
 - What was the second attempt? Why did that fail too?
-- Get at least 2 dead ends. Be painfully specific about the environment cause.
-  - "GFW blocks GitHub on port 443" not "network issue"
-  - "Git Bash doesn't expand `~` in nested double quotes" not "path problem"
+- Capture every observed dead end; do not invent failures to reach a quota.
+- Record the command, error and supporting evidence separately from the cause.
+  Label an explanation as a hypothesis unless the evidence establishes it.
 - Every recorded pitfall saves a future session from the same dead end
 
 **The success**
@@ -60,7 +71,13 @@ This confirmation step prevents generating a skill that's wrong — which is wor
 
 ### Step 3 — Fill the template
 
-Use `templates/skill-template.md`. Iron rules:
+Use `${CLAUDE_SKILL_DIR}/templates/skill-template.md` through the bundled generator.
+Create a JSON input with the collected scalar fields and arrays `triggers`,
+`quick_start`, `steps` (title/command/why), and `pitfalls` (approach/why/symptom).
+The generator also accepts the legacy numbered fields. Keep all entries.
+Use `python "${CLAUDE_SKILL_DIR}/scripts/generate.py" input.json --dry-run`
+to preview. YAML frontmatter must be the first thing in the output; comments
+belong after it. Iron rules:
 
 1. **Every command must be one the user actually ran.** No placeholders. No "something like this." If you're not sure, ask.
 2. **Every pitfall must be one the user actually hit.** No "here's what might go wrong." Only real scars.
@@ -73,16 +90,21 @@ Use `templates/skill-template.md`. Iron rules:
 After writing the skill, run the quick validator:
 
 ```bash
-python scripts/quick_validate.py ~/.claude/skills/{skill-name}.md
+python "${CLAUDE_SKILL_DIR}/scripts/generate.py" input.json --strict
+python "${CLAUDE_SKILL_DIR}/scripts/quick_validate.py" ~/.claude/skills/github-push/SKILL.md --strict
 ```
 
 The validator checks:
 - Frontmatter is valid YAML
-- Required fields are present (name, description, environment)
-- No placeholder text remains (no `{{...}}`, `TODO`, `FIXME`)
-- Trigger phrases are specific enough (not single generic words)
-- Commands look concrete (contain flags, arguments, or specific syntax)
-- Environment section has all four keys (os, shell, network, tools)
+- The Skill Forge schema has typed name, description, compatibility and nested environment fields
+- No unresolved template variables or unfinished markers remain
+- Description and trigger wording have basic quality hints, including non-English text
+- Required command sections and verification evidence are present in strict mode
+
+These are static checks, not proof the commands work or Claude will select
+the skill correctly. In a fresh Claude Code session, test the explicit slash
+command, positive trigger prompts, and unrelated prompts that must not trigger.
+For task success, compare the actual result with the recorded expected output.
 
 If validation fails, fix the issues and re-run. Don't skip this step — it catches the most common mistakes.
 
@@ -101,7 +123,12 @@ Review the description with the user. Offer alternative phrasings. A badly-trigg
 
 ### Step 6 — Save and confirm
 
-Save to `~/.claude/skills/{skill-name}.md`. The filename uses kebab-case.
+Save to `~/.claude/skills/<skill-name>/SKILL.md`. Names use portable kebab-case,
+at most 64 characters. The generator refuses an existing skill or legacy flat
+file by default. Review the old skill first; merge relevant experience in the
+candidate JSON rather than replacing it blindly. Only use `--force` when an
+update is intended. It preserves the old file in `~/.claude/skill-forge-backups/`
+and publishes the new content atomically. The legacy flat file remains intact.
 
 Tell the user:
 - Path where the skill was saved
